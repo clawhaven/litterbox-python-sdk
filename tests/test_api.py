@@ -43,16 +43,13 @@ def _host_payload(**overrides: Any) -> dict[str, Any]:
         "provider": "exe",
         "image": "ghcr.io/litterbox/sandbox:test",
         "provisioning_task_id": "provision-task-1",
-        "activation_task_id": "",
         "ssh_host": "host-abc.example.ts.net",
         "ssh_port": 22,
         "known_hosts": "ssh-ed25519 AAAA...\n",
         "tailscale_device_id": None,
         "last_error": "",
-        "announce_token_used": False,
         "created_at": "2026-05-28T12:00:00+00:00",
         "updated_at": "2026-05-28T12:00:00+00:00",
-        "announced_at": None,
         "activated_at": None,
         "expires_at": None,
     }
@@ -104,7 +101,6 @@ async def test_create_host_posts_payload_and_returns_parsed_host(api: SandboxAPI
     assert host.ssh_host == payload["ssh_host"]
     assert host.tailscale_device_id is None
     assert not hasattr(host, "provisioning_task_id")
-    assert not hasattr(host, "activation_task_id")
     assert host.activated_at is None
     assert host.expires_at == payload["expires_at"]
 

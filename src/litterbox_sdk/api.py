@@ -1,11 +1,11 @@
 """Async HTTP client for Litterbox.
 
 The service is the canonical owner of host provisioning, Tailscale
-auth-key minting, exe.dev VM lifecycle, and host announce / teardown.
-This SDK is a thin wrapper around its HTTP API; everything that needs
-to happen *inside* a provisioned VM (SSH, file transfer, command
-execution) is the caller's responsibility — the SDK hands back the
-host record with ``ssh_host`` / ``ssh_port`` / ``known_hosts`` and
+auth-key minting and device discovery, exe.dev VM lifecycle, and host
+teardown. This SDK is a thin wrapper around its HTTP API; everything
+that needs to happen *inside* a provisioned VM (SSH, file transfer,
+command execution) is the caller's responsibility — the SDK hands back
+the host record with ``ssh_host`` / ``ssh_port`` / ``known_hosts`` and
 stops there.
 
 Usage::
@@ -73,10 +73,8 @@ class SandboxHost:
     known_hosts: str
     tailscale_device_id: str | None
     last_error: str
-    announce_token_used: bool
     created_at: str
     updated_at: str
-    announced_at: str | None
     activated_at: str | None
     expires_at: str | None
 
