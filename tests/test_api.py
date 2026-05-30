@@ -27,7 +27,9 @@ from litterbox_sdk import (
     SandboxConflictError,
     SandboxHost,
     SandboxNotFoundError,
+    SandboxProvisioningError,
     SandboxResponseError,
+    SandboxUnavailableError,
 )
 
 BASE_URL = "https://sandbox.test"
@@ -42,7 +44,6 @@ def _host_payload(**overrides: Any) -> dict[str, Any]:
         "status": "provisioning",
         "provider": "exe",
         "image": "ghcr.io/litterbox/sandbox:test",
-        "provisioning_task_id": "provision-task-1",
         "ssh_host": "host-abc.example.ts.net",
         "ssh_port": 22,
         "known_hosts": "ssh-ed25519 AAAA...\n",
@@ -100,7 +101,6 @@ async def test_create_host_posts_payload_and_returns_parsed_host(api: SandboxAPI
     assert host.id == payload["id"]
     assert host.ssh_host == payload["ssh_host"]
     assert host.tailscale_device_id is None
-    assert not hasattr(host, "provisioning_task_id")
     assert host.activated_at is None
     assert host.expires_at == payload["expires_at"]
 
@@ -257,14 +257,45 @@ async def test_500_raises_sandbox_response_error(api: SandboxAPI):
 
 
 @respx.mock
-async def test_transport_error_raises_sandbox_response_error(api: SandboxAPI):
-    """Network-level failure (DNS, connection refused, TLS) — wrapped so
-    callers only need to catch SDK exceptions, not the underlying
-    httpx hierarchy."""
+async def test_502_raises_sandbox_provisioning_error(api: SandboxAPI):
+    """The service maps inline provisioning failures to 502; the SDK
+    surfaces them as a dedicated error so callers can distinguish
+    "provisioning broke" from generic server faults."""
+
+    respx.post(f"{BASE_URL}/hosts").mock(
+        return_value=httpx.Response(
+            502,
+            json={"detail": "ssh-keyscan never returned host keys"},
+        ),
+    )
+
+    with pytest.raises(SandboxProvisioningError, match="ssh-keyscan"):
+        await api.create_host()
+
+
+@respx.mock
+async def test_transport_error_raises_sandbox_unavailable_error(api: SandboxAPI):
+    """Network-level failure (DNS, connection refused, TLS) — wrapped as
+    SandboxUnavailableError so callers can distinguish "service can't be
+    reached, retry with backoff" from "service responded with a refusal"."""
 
     respx.get(f"{BASE_URL}/hosts").mock(side_effect=httpx.ConnectError("nope"))
 
-    with pytest.raises(SandboxResponseError, match="transport failed"):
+    with pytest.raises(SandboxUnavailableError, match="transport failed"):
+        await api.list_hosts()
+
+
+@respx.mock
+async def test_503_raises_sandbox_unavailable_error(api: SandboxAPI):
+    """A 503 from the service (host teardown failed, dependency outage)
+    is the service's own "I'm broken, try again later" signal — same
+    semantics as a transport failure on the caller's side."""
+
+    respx.get(f"{BASE_URL}/hosts").mock(
+        return_value=httpx.Response(503, json={"detail": "host teardown could not be completed"}),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="host teardown"):
         await api.list_hosts()
 
 
@@ -312,9 +343,9 @@ async def test_aclose_drops_client_and_is_idempotent(api: SandboxAPI):
 
 def test_cross_loop_reuse_rebinds_client_without_crashing():
     """The httpx ``AsyncClient`` is loop-bound. Reusing the same SDK
-    instance across two ``asyncio.run`` invocations (which is the
-    closest stand-in for ASGI lifespan vs. taskiq worker callbacks)
-    should rebind instead of erroring.
+    instance across two ``asyncio.run`` invocations (the closest
+    stand-in for two distinct event-loop lifetimes against one module-
+    level SDK instance) should rebind instead of erroring.
 
     The pre-fix behaviour was a ``RuntimeError("Event loop is closed")``
     or ``Loop attached to a different loop`` on the second call — that
@@ -367,7 +398,7 @@ def test_from_env_supports_custom_prefix(monkeypatch: pytest.MonkeyPatch):
     sandbox = SandboxAPI.from_env(prefix="CUSTOM_")
 
     assert sandbox.base_url == "https://custom.test"
-    assert sandbox.timeout == 30.0  # default when unset
+    assert sandbox.timeout == 300.0  # default when unset
 
 
 def test_from_env_strips_trailing_slash_via_constructor(

@@ -22,7 +22,6 @@ from litterbox_sdk import SandboxAPI
 sandbox = SandboxAPI(
     base_url="https://sandbox.internal.ts.net",
     token="...",
-    timeout=30.0,
 )
 
 try:
@@ -37,6 +36,11 @@ finally:
     await sandbox.delete_host(host.id)
     await sandbox.aclose()
 ```
+
+`create_host` blocks until the host is `active` — typically ~10–30s, up to a
+few minutes worst case. The SDK's default `timeout` (300s) covers this. Pass
+an `idempotency_key` for retry safety: a retry with the same key after a
+successful provision returns the original host instead of creating a duplicate.
 
 `SandboxAPI.from_env(prefix="SANDBOX_")` reads
 `SANDBOX_SERVICE_URL`, `SANDBOX_SERVICE_TOKEN`, and optional

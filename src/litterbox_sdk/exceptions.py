@@ -8,12 +8,13 @@ themselves.
 
 
 class SandboxUnavailableError(RuntimeError):
-    """Sandbox service is unreachable or fundamentally broken.
+    """Sandbox service is unreachable or transiently broken.
 
-    Callers typically want to retry with backoff rather than surface to
-    the user. Distinct from :class:`SandboxAPIError` because that
-    family represents *the service responding with a refusal*, not a
-    transport-level failure.
+    Raised for both transport-level failures (DNS, connection refused,
+    TLS, timeouts) and 503 responses from the service itself. Both
+    signal "retry with backoff" rather than "the request was rejected."
+    Distinct from :class:`SandboxAPIError`, which represents the
+    service deliberately refusing a request.
     """
 
 
@@ -38,6 +39,14 @@ class SandboxConflictError(SandboxAPIError):
 
     e.g. provisioning a Linux user on a host that already has one with
     the same name.
+    """
+
+
+class SandboxProvisioningError(SandboxAPIError):
+    """502 — the service tried to provision the host and the provider,
+    Tailscale, or ssh-keyscan step failed. The host row stays in
+    ``error`` state on the service side; call :meth:`delete_host` to
+    release any partial provider state.
     """
 
 

@@ -15,10 +15,12 @@ Usage::
     sandbox = SandboxAPI(
         base_url="https://sandbox.internal.ts.net",
         token="...",
-        timeout=30.0,
     )
     try:
-        host = await sandbox.create_host(image="ghcr.io/.../sandbox:abc123")
+        host = await sandbox.create_host(
+            image="ghcr.io/.../sandbox:abc123",
+            idempotency_key="agent-run-42",
+        )
         # ... use host.ssh_host etc. with asyncssh ...
     finally:
         await sandbox.delete_host(host.id)
@@ -40,7 +42,9 @@ from .exceptions import (
     SandboxAuthError,
     SandboxConflictError,
     SandboxNotFoundError,
+    SandboxProvisioningError,
     SandboxResponseError,
+    SandboxUnavailableError,
 )
 
 # Explicit pool budget. The httpx defaults (100 / 20) are plenty for
@@ -99,15 +103,21 @@ class SandboxAPI:
     Construct one per process (or one per consuming subsystem) and
     reuse it. The internal ``httpx.AsyncClient`` is loop-aware: if the
     client gets used from a different event loop than the one it was
-    created on (e.g. an ASGI request handler vs. a taskiq worker
-    callback), it transparently rebinds to the running loop on next
-    use. This is a known foot-gun with long-lived ``httpx.AsyncClient``
-    instances; we handle it here so callers don't have to.
+    created on (e.g. an ASGI request handler vs. a CLI command vs. a
+    cron job all using the same SDK instance via module-level state),
+    it transparently rebinds to the running loop on next use. This is
+    a known foot-gun with long-lived ``httpx.AsyncClient`` instances;
+    we handle it here so callers don't have to.
 
     Always call :meth:`aclose` during graceful shutdown.
     """
 
-    def __init__(self, *, base_url: str, token: str, timeout: float = 30.0) -> None:
+    def __init__(self, *, base_url: str, token: str, timeout: float = 300.0) -> None:
+        # The default covers the worst-case server-side budget for inline
+        # `POST /hosts`: Tailscale device discovery (~180s) + ssh-keyscan
+        # retries (~30s) + provider + network jitter. A tighter timeout that
+        # fires while the server is still provisioning leaves an orphan VM
+        # on the provider side until the janitor reaps it.
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -135,7 +145,7 @@ class SandboxAPI:
 
         url = os.environ[f"{prefix}SERVICE_URL"]
         token = os.environ[f"{prefix}SERVICE_TOKEN"]
-        timeout = float(os.environ.get(f"{prefix}SERVICE_TIMEOUT", "30"))
+        timeout = float(os.environ.get(f"{prefix}SERVICE_TIMEOUT", "300"))
         return cls(base_url=url, token=token, timeout=timeout)
 
     # ------------------------------------------------------------------
@@ -152,10 +162,17 @@ class SandboxAPI:
     ) -> SandboxHost:
         """Provision a new host.
 
-        Returns once the service has recorded the request; the host may
-        still be in ``provisioning`` state. Poll :meth:`get_host` to
-        wait for it to reach ``active``. ``idempotency_key`` is sent as
-        the service's ``Idempotency-Key`` header.
+        The service provisions inline; this call blocks until the host
+        is ``active`` (~10-30s typical, up to a few minutes in the worst
+        case). Raises :class:`SandboxProvisioningError` if the service
+        reaches its own provisioning failure (502); raises
+        :class:`SandboxResponseError` on transport failure or unexpected
+        status.
+
+        ``idempotency_key`` is sent as the service's ``Idempotency-Key``
+        header. Useful for retry safety on flaky networks — a retry with
+        the same key after a successful provision returns the original
+        host instead of creating a duplicate.
         """
 
         payload: dict[str, Any] = {}
@@ -235,7 +252,7 @@ class SandboxAPI:
                 timeout=self.timeout,
             )
         except httpx.RequestError as exc:
-            raise SandboxResponseError(f"Sandbox service transport failed: {exc}") from exc
+            raise SandboxUnavailableError(f"Sandbox service transport failed: {exc}") from exc
 
         if response.status_code == 204:
             return {}
@@ -253,6 +270,12 @@ class SandboxAPI:
 
         if response.status_code == 409:
             raise SandboxConflictError(json_response.get("detail", "conflict"))
+
+        if response.status_code == 502:
+            raise SandboxProvisioningError(json_response.get("detail", "provisioning failed"))
+
+        if response.status_code == 503:
+            raise SandboxUnavailableError(json_response.get("detail", "service unavailable"))
 
         if response.status_code >= 400:
             raise SandboxResponseError(json_response.get("detail", "error"))
@@ -278,8 +301,7 @@ class SandboxAPI:
                 # so drop the reference and rely on GC. httpx will emit
                 # an "unclosed client" warning, which is the correct
                 # signal that the process-level lifecycle hook
-                # (ASGI lifespan / taskiq WORKER_SHUTDOWN) didn't run
-                # on the previous loop.
+                # (e.g. ASGI lifespan) didn't run on the previous loop.
                 self._client = None
                 self._client_loop = None
             self._client = httpx.AsyncClient(limits=_SANDBOX_HTTP_LIMITS)

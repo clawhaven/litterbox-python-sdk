@@ -4,13 +4,13 @@ Guide for AI agents working in `litterbox-python-sdk`.
 
 ## What This Project Is
 
-`litterbox-python-sdk` is the async Python SDK for Litterbox's HTTP host
-API. It is a small client library, not the Litterbox service and not an SSH
-execution layer.
+`litterbox-python-sdk` is the async Python SDK for Litterbox's HTTP host API:
+a small client library that speaks HTTP, parses typed records, and raises
+typed errors.
 
 The package name is `litterbox-python-sdk`; the import package is
-`litterbox_sdk`. Public API names still use `Sandbox*` because the Litterbox
-domain object is a sandbox host.
+`litterbox_sdk`. Public API names use `Sandbox*` because the Litterbox domain
+object is a sandbox host.
 
 ## Boundaries
 
@@ -18,8 +18,6 @@ domain object is a sandbox host.
   exceptions.
 - Do not add SSH session management, file transfer, command execution,
   Tailscale management, VM provider logic, or service-side lifecycle behavior.
-- Do not introduce compatibility shims for old repo names or stale payload
-  contracts unless explicitly requested.
 - Prefer explicit Litterbox wire contracts over broad defensive parsing.
 - Keep dependencies light; justify any new runtime dependency before adding it.
 
@@ -45,7 +43,8 @@ uv run pytest
 ```
 
 Run the full set when changing Python behavior. For documentation-only edits,
-at least search for stale names with `rg` and state that tests were not run.
+grep for any names you changed and state in the summary that tests were not
+run.
 
 ## Working Rules
 
